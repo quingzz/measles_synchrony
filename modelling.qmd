@@ -1,0 +1,7 @@
+---
+title: "Modeling"
+---
+
+Goal:
+
+-   build a model to explain the synchrony/coherence observed from the wavelet analysis

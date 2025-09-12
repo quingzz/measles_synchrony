@@ -1,0 +1,608 @@
+---
+title: "Wavelet analysis"
+---
+
+Goal:
+
+-   Check synchrony in the number of measles cases between SEA countries
+
+-   Method: wavelet analysis to assess:
+
+    -   Seasonal pattern (within year, depends on school year, etc.)
+
+    -   Multiannual patterns (multiple years, typically years between major epidemics)
+
+## Data processing
+
+### Load data
+
+```{r}
+#| code-fold: true
+#| code-summary: "Load measles epicurve data for SEA countries"
+suppressMessages(library(tidyverse))
+library(janitor)
+library(plotly)
+library(patchwork)
+
+world_epi_curve <- readxl::read_excel(
+  "data/404-table-web-epi-curve-data.xlsx",
+  sheet = "WEB")
+
+# --- preprocess ----- 
+world_epi_curve <- world_epi_curve %>% 
+  clean_names() %>% 
+  mutate(
+    date = ym(str_c(year, month)),
+    measles_clinical = as.integer(measles_clinical)
+  ) 
+
+filtered_countries <- c(
+  "Viet Nam", "Thailand", "Cambodia", "Malaysia", "Singapore", "Myanmar", "Philippines","Brunei Darussalam", "Timor-Leste", "Indonesia",
+  "Lao People's Democratic Republic")
+
+# plot epi curve of South East Asia countries
+sea_epi_curve <- world_epi_curve %>% 
+  clean_names() %>% 
+  mutate(
+    date = ym(str_c(year, month)),
+    measles_suspect = as.integer(measles_suspect),
+    measles_lab_confirmed = as.integer(measles_lab_confirmed),
+    measles_total = as.integer(measles_total)
+  ) %>% 
+  filter(
+    country %in% filtered_countries
+  ) 
+```
+
+### Filter data
+
+-   Even spaced time series
+
+    -   Check % of missing data from each of the 11 SEA countries
+
+```{r}
+#| code-fold: true
+#| code-summary: "Generate evenly spaced time series for all countries"
+date_range <- range(sea_epi_curve$date)
+sea_epi_curve <- sea_epi_curve %>% 
+  group_by(country) %>%
+  rename(
+    incidence = measles_total
+  ) %>% 
+  complete(
+    date = seq(date_range[1], date_range[2], by = "month"),
+    fill = list(
+      incidence = 0
+    )
+  ) %>% 
+  ungroup()
+```
+
+View the percentage of data points where `incidence==0`
+
+```{r}
+#| code-fold: true
+#| code-summary: "Get country with highest % of incidence = 0"
+percent_zero <- sea_epi_curve %>% 
+  group_by(region, country) %>% 
+  summarize(
+    percent_zero = sum(incidence == 0)/n()
+  ) %>% 
+  arrange(
+    desc(percent_zero)
+  ) 
+
+# filtered out countries where percent of data points where incidence = 0 > 50%
+high_pct_zero <- percent_zero %>% head(n = 4) %>% pull(country)
+```
+
+### Plot incidence
+
+```{r}
+#| code-fold: true
+#| code-summary: "Plor raw incidence"
+sea_epicurve_plot <- sea_epi_curve %>% 
+  filter(!(country %in% high_pct_zero)) %>% 
+  ggplot() +
+  geom_line(
+    aes(
+      x = date,
+      y = incidence,
+      color = country
+    )
+  ) 
+
+ggplotly(sea_epicurve_plot)
+```
+
+### Preprocess data
+
+-   Log transform
+
+-   Normalized
+
+```{r}
+#| code-fold: true
+#| code-summary: "Preprocess data"
+filtered_sea_epicurve <- sea_epi_curve %>% 
+  filter(!(country %in% high_pct_zero)) 
+
+log_transformed <- filtered_sea_epicurve %>% 
+  group_by(country) %>% 
+  mutate(
+    # log transform
+    incidence = log10(incidence + 1),
+    # normalized
+    incidence = (incidence - mean(incidence))/sd(incidence)
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+#| code-fold: true
+#| code-summary: "Plot preprocessed data"
+log_epicurve_plot <- log_transformed %>% 
+  filter(!(country %in% high_pct_zero)) %>% 
+  ggplot() +
+  geom_line(
+    aes(
+      x = date,
+      y = incidence,
+      color = country
+    )
+  ) 
+
+ggplotly(log_epicurve_plot)
+```
+
+## Wavelet analysis
+
+```{r}
+library(WaveletComp)
+```
+
+### Try analyze VN first
+
+```{r}
+#| code-fold: true
+#| code-summary: "Code"
+wavelet <- log_transformed %>% 
+  filter(
+    country == "Viet Nam"
+  ) %>% 
+  analyze.wavelet(
+    my.series = "incidence",
+    dt = 1/12,
+    lowerPeriod = 1/6,
+    upperPeriod = 8
+  )
+
+wt.image(wavelet, 
+         # n.levels = 250, 
+         legend.params = list(lab = "Power"),
+         periodlab = "Period(Year)")
+```
+
+View global power (i.e., mean power across time)
+
+```{r}
+wt.avg(wavelet)
+```
+
+Check the statistically significant cycle
+
+```{r}
+#| code-fold: true
+#| code-summary: "Code"
+data.frame(
+  period = wavelet$Period,
+  power = wavelet$Power.avg,
+  p_val = wavelet$Power.avg.pval
+) %>% 
+  ggplot() +
+    geom_line(
+        aes(
+          x = period, 
+          y = power        
+        )
+      ) +
+    geom_point(
+      aes(
+        x = period, 
+        y = power,
+        alpha = p_val
+      ),
+      color = "red"
+    )
+```
+
+Reconstruct the 5 year period component
+
+```{r}
+reconstruct(
+  wavelet,
+  sel.period = 5,
+  plot.rec = TRUE
+)
+```
+
+Plot phase angle for Vietnam
+
+```{r}
+#| code-fold: true
+#| code-summary: "Plot phase"
+
+# get the column for the 5-year period
+row_5year <- which.min(abs(wavelet$Period - 5))
+
+data.frame(
+  date = wavelet$series$date,
+  phase = wavelet$Phase[row_5year,]
+) %>% 
+  ggplot() +
+  geom_line(
+    aes(
+      x = date,
+      y = phase
+    ), color = "cornflowerblue"
+  )
+```
+
+### Perform analysis on all data
+
+```{r}
+analyze_countries <- c("Thailand", "Myanmar", "Philippines", "Viet Nam", 
+                       "Malaysia")
+
+countries_wavelets <- log_transformed %>% 
+  filter(country %in% analyze_countries) %>%
+  group_by(country) %>% 
+  nest() %>% 
+  mutate(
+    wavelet = map(data, \(dat){
+      dat %>% 
+      analyze.wavelet(
+        my.series = "incidence",
+        dt = 1/12, # 1 time unit = 1 year 
+        lowerPeriod = 1/6, # 2 months
+        upperPeriod = 8, #  years
+        verbose = FALSE
+      )
+    })
+  ) %>% 
+  select(country, wavelet) %>%
+  deframe()
+```
+
+### Power spectrum
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot power spectrum of all countries"
+
+plot_power <- function(wavelets){
+  # return heatmap of power and also global power
+  imap(wavelets, \(wavelet, country){
+    wt.image(
+        wavelet,
+        main = paste0(country, " power spectrum"),
+        legend.params = list(lab = "Power"),
+        periodlab = "Period(Year)"
+      )
+    
+    wt.avg(
+        wavelet,
+        main = paste0(country, " global power")
+      )
+  })
+}
+```
+
+```{r}
+plot_power(countries_wavelets)
+```
+
+### Reconstructed component
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot period specific component"
+reconstruct_ts <- function(wavelets, period = 5){
+  df <- map2_dfr(wavelets, names(wavelets), \(wavelet, country){
+    rec_period <- reconstruct(
+      wavelet,
+      sel.period = period,
+      plot.rec = FALSE,
+      verbose = FALSE
+    )
+    
+    rec_period$series %>%
+      mutate(country = country, .before = 1)
+  })
+  
+  plot <- df %>% 
+    ggplot() +
+      geom_line(
+        aes(x = date, y = incidence.r, color = country)
+      ) +
+      labs(
+        y = paste0(round(mean(period), digits = 2), "-year period component"),
+        x = "Date"
+      )
+  
+  # return data.frame and plot
+  list(
+    df = df,
+    plot = plot
+  )
+}
+```
+
+Roughly 5 year period
+
+```{r}
+reconstruct_ts(countries_wavelets, period = seq(4.5, 5.5, 0.1))
+```
+
+Roughly biennual component
+
+```{r}
+reconstruct_ts(countries_wavelets, period = seq(1.5, 2.5, 0.1))
+```
+
+Roughly annual component
+
+```{r}
+reconstruct_ts(countries_wavelets, period = seq(0.5, 1.5, 0.1))
+```
+
+### Phase and phase difference
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot period-specific phase"
+compute_phase <- function(wavelets, period = 5){
+  df <- map2_dfr(wavelets, names(wavelets), \(wavelet, country){
+    
+    # if only one period is given -> select the closest period
+    # else select all period within the range
+    row_period <- if(length(period) == 1) which.min(abs(wavelet$Period - period)) else
+      which( (wavelet$Period >= min(period)) & (wavelet$Period <= max(period)) )
+    
+    data.frame(
+      date = wavelet$series$date,
+      # compute mean phase across all selected periods
+      phase = if(length(row_period) > 1) colMeans(wavelet$Phase[row_period,]) else wavelet$Phase[row_period,]
+    ) %>% 
+      mutate(
+        country = country,
+        .before = 1
+      )
+  })
+  
+  plot <- df %>% 
+    ggplot() +
+      geom_line(
+        aes(x = date, y = phase, color = country)
+      ) +
+      labs(
+        y = "Phase",
+        x = "Date"
+      )
+  
+  # return data.frame and plot
+  list(
+    df = df,
+    plot = plot
+  )
+}
+```
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot period-specific phase difference"
+
+# Manually compute phase difference
+# There will be an alternative function to make use package (WaveletComp) functions later on
+compute_phase_diff <- function(wavelets, period = 5, ref_country = "Viet Nam", 
+                               constraint = TRUE, diff_to_time = TRUE){
+  # compute phase of each of these countries
+  phases <- compute_phase(wavelets, period = period)$df
+  
+  ref_country_phase <- phases %>% 
+    filter(
+      country == ref_country
+    ) %>% 
+    select(-country)
+  
+  # get vector of remaining country
+  remaining_countries <- phases %>% filter(country != ref_country) %>% pull(country) %>% unique()
+  
+  df <- map_dfr(remaining_countries, \(curr_country){
+    
+    data.frame(
+      date = ref_country_phase$date,
+      phase_diff = ref_country_phase$phase - phases %>% 
+            filter(
+              country == curr_country
+            ) %>% pull(phase)
+    ) %>% 
+    mutate(
+      # constraint the phase difference within +-pi
+      phase_diff = if(constraint) ((phase_diff + 3*pi) %% (2*pi)) - pi else phase_diff,
+      phase_diff = if(diff_to_time) phase_diff*mean(period)/(2*pi) else phase_diff,
+      label = paste0(ref_country, "-", curr_country)
+    )
+  })
+  
+  plot <- df %>% 
+    ggplot() +
+      geom_line(
+        aes(x = date, y = phase_diff, color = label),
+        linetype = "dashed"
+      ) +
+    labs(
+      title = paste0("Phase difference between ", ref_country, " and other countries"),
+      xlab = "Date",
+      y = paste0("Phase difference (in ", if(diff_to_time) "time unit" else "radians", ")")
+    )
+    
+  list(
+    df = df, plot = plot
+  )
+}
+```
+
+Major epidemics cycle (roughly 5 years)
+
+```{r}
+countries_phase <- compute_phase(countries_wavelets, period = 5)
+countries_phase_diff <- compute_phase_diff(countries_wavelets, period = 5, constraint = TRUE,
+                                           diff_to_time = TRUE)
+
+countries_phase$plot / countries_phase_diff$plot
+```
+
+Roughly biennial epidemic
+
+```{r}
+countries_phase <- compute_phase(countries_wavelets, period = 2.1)
+countries_phase_diff <- compute_phase_diff(countries_wavelets, period = 2.1, constraint = TRUE)
+
+countries_phase$plot / countries_phase_diff$plot
+```
+
+## Coherence analysis
+
+Try checking coherence using package
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to generate coherence analyses for multiple pairs"
+library(janitor)
+
+# Function that takes data instead of wavelets
+# wavelets, period = 5, ref_country = "Viet Nam", constraint = TRUE, diff_to_time = TRUE
+generate_coherence_analysis <- function(data, 
+                                        ref_country = "Viet Nam",
+                                        verbose = FALSE){
+
+  other_countries <- data %>% filter(country != ref_country) %>% pull(country) %>%  unique()
+  
+  coherence <- map(other_countries, \(curr){
+    data %>% 
+      filter(
+        country %in% c(ref_country, curr)
+      ) %>% 
+      select(country, date, incidence) %>% 
+      pivot_wider(
+        names_from = country,
+        values_from = incidence
+      ) %>%
+      as.data.frame() %>% 
+      analyze.coherency(
+        my.pair = c(ref_country, curr),
+        dt = 1/12,
+        lowerPeriod = 1/6,
+        upperPeriod = 8,
+        verbose = verbose
+      )
+  })
+  
+  names(coherence) <- paste0(ref_country, " - ", other_countries)
+
+  coherence
+}
+```
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to generate cross-wavelet power spectrum plot"
+
+plot_coherence_power <- function(coherence_list){
+  # return heatmap of power and also global power
+  imap(coherence_list, \(coherence, label){
+    wc.image(
+        coherence,
+        main = paste0(label, " power spectrum"),
+        legend.params = list(lab = "Power"),
+        periodlab = "Period(Year)"
+      )
+    
+    wc.avg(
+        coherence,
+        main = paste0(label, " global power")
+      )
+  })
+}
+```
+
+```{r}
+countries_coherence <- log_transformed %>% 
+    filter(country %in% analyze_countries) %>% 
+    generate_coherence_analysis()
+```
+
+### Cross-wavelet power spectrum
+
+```{r}
+plot_coherence_power(countries_coherence)
+```
+
+### Phase difference
+
+```{r}
+#| code-fold: true
+#| code-summary: "Alternative function to compute phase difference"
+
+# alternative way to get phase difference
+compute_phase_diff_alt <- function(coherence_list, period = 5){
+  df <- map2_dfr(coherence_list, names(coherence_list), \(coherence, label) {
+    # if only one period is given -> select the closest period
+    # else select all period within the range
+    row_period <- if (length(period) == 1)
+      which.min(abs(wavelet$Period - period)) else
+      which((wavelet$Period >= min(period)) &
+              (wavelet$Period <= max(period)))
+    
+    data.frame(
+      date = coherence$series$date,
+      phase_diff = if (length(row_period) > 1)
+        colMeans(coherence$Angle[row_period, ]) else
+        coherence$Angle[row_period, ]
+    ) %>% 
+      mutate(
+        label = label
+      )
+  })
+  
+  plot <- df %>% 
+    ggplot() +
+    geom_line(
+      aes(x = date, y = phase_diff, color = label),
+      linetype = "dashed"
+    ) +
+    labs(
+      x = "Date",
+      y = "Phase difference (in radians)"
+    )
+  
+  list(
+    df = df, 
+    plot = plot
+  )
+}
+```
+
+```{r}
+compute_phase_diff(countries_wavelets, period = 4.5)$plot / 
+compute_phase_diff_alt(countries_coherence, period = 4.5)$plot
+```
+
+## Correlation to other factors
+
+TODO: Check correlation of the synchrony to other factors, e.g.:
+
+-   Distance
+
+-   Change in synchrony to Thailand and Phillippines over time (suggest the source of measles changes b4 and after covid?)
