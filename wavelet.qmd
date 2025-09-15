@@ -189,9 +189,7 @@ View global power (i.e., mean power across time)
 wt.avg(wavelet)
 ```
 
-Check the statistically significant cycle
-
-```{r}
+```{r, include=FALSE}
 #| code-fold: true
 #| code-summary: "Code"
 data.frame(
@@ -251,6 +249,8 @@ data.frame(
 ### Perform analysis on all data
 
 ```{r}
+#| code-fold: true
+#| code-summary: "Perform wavelet data analysis on all countries"
 analyze_countries <- c("Thailand", "Myanmar", "Philippines", "Viet Nam", 
                        "Malaysia")
 
@@ -347,7 +347,7 @@ reconstruct_ts(countries_wavelets, period = seq(4.5, 5.5, 0.1))
 Roughly biennual component
 
 ```{r}
-reconstruct_ts(countries_wavelets, period = seq(1.5, 2.5, 0.1))
+reconstruct_ts(countries_wavelets, period = 2)
 ```
 
 Roughly annual component
@@ -438,9 +438,12 @@ compute_phase_diff <- function(wavelets, period = 5, ref_country = "Viet Nam",
   plot <- df %>% 
     ggplot() +
       geom_line(
-        aes(x = date, y = phase_diff, color = label),
-        linetype = "dashed"
+        aes(x = date, y = phase_diff, color = label)
       ) +
+      geom_hline(
+        aes(yintercept = 0),
+        color = "black", linetype = "dashed"
+      ) + 
     labs(
       title = paste0("Phase difference between ", ref_country, " and other countries"),
       xlab = "Date",
@@ -519,13 +522,17 @@ generate_coherence_analysis <- function(data,
 #| code-fold: true
 #| code-summary: "Function to generate cross-wavelet power spectrum plot"
 
-plot_coherence_power <- function(coherence_list){
+plot_cwavelet_power <- function(coherence_list){
   # return heatmap of power and also global power
   imap(coherence_list, \(coherence, label){
     wc.image(
         coherence,
+        # set significance level for drawing contour (white line around an area)
+        siglvl.contour = 0.1, 
+        # set significance level for drawing arrows
+        siglvl.arrow = 0.05, which.arrow.sig = "wt",
         main = paste0(label, " power spectrum"),
-        legend.params = list(lab = "Power"),
+        legend.params = list(lab = "cross-wavelet power"),
         periodlab = "Period(Year)"
       )
     
@@ -545,8 +552,93 @@ countries_coherence <- log_transformed %>%
 
 ### Cross-wavelet power spectrum
 
+Note on the arrows:
+
+-   horizontal arrows pointing to the right indicate in-phase
+
+-   horizontal arrows pointing to the left indicate anti-phase
+
 ```{r}
-plot_coherence_power(countries_coherence)
+plot_cwavelet_power(countries_coherence)
+```
+
+### Coherence
+
+Plot coherence over time-period
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot coherence"
+plot_coherence <- function(coherence_list){
+  out <- map2(names(coherence_list), coherence_list, \(label, analysis){
+      wc.image(
+        analysis,
+        which.image = "wc",
+        # set significance level for drawing contour (white line around an area)
+        siglvl.contour = 0.1, 
+        # set significance level for drawing arrows
+        siglvl.arrow = 0.05, which.arrow.sig = "wt",
+        main = paste0(label, " coherence plot"),
+        legend.params = list(lab = "wavelet coherence level"),
+        periodlab = "Period(Year)"
+      )
+  })
+  
+  names(out) <- names(coherence_list)
+  out
+}
+```
+
+```{r}
+wc_plots <- plot_coherence(countries_coherence)
+```
+
+Plot average coherence at each period across time
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot average coherence"
+plot_avg_coherence <- function(coherence_list){
+  map2(names(coherence_list), coherence_list, \(label, analysis){
+    # compute data for plotting
+    df <- data.frame(
+      period = analysis$Period,
+      avg_coherence = analysis$Coherence.avg,
+      p_val = analysis$Coherence.avg.pval
+    ) %>% 
+      mutate(
+        p_val_label = case_when(
+          p_val <= 0.05 ~ "<= 0.05",
+            p_val <= 0.1 ~ "<= 0.1",
+            .default = ">0.1"
+        )
+      )
+    
+    ggplot() +
+      geom_line(
+        aes(
+          x = period, y = avg_coherence
+        ),
+        data = df
+      ) +
+      geom_point(
+        aes(
+          x = period, y = avg_coherence, color = p_val_label
+        ), 
+        data = df %>% filter(p_val_label != ">0.1")
+      ) + 
+      labs(
+        title = paste0("Average coherence of ", label),
+        x = "Period",
+        y = "Coherence",
+        color = "p-value"
+      )
+  })
+}
+```
+
+```{r}
+plot_avg_coherence(countries_coherence)
 ```
 
 ### Phase difference
@@ -579,12 +671,14 @@ compute_phase_diff_alt <- function(coherence_list, period = 5){
   plot <- df %>% 
     ggplot() +
     geom_line(
-      aes(x = date, y = phase_diff, color = label),
-      linetype = "dashed"
+      aes(x = date, y = phase_diff, color = label)
     ) +
     labs(
       x = "Date",
       y = "Phase difference (in radians)"
+    ) +
+    geom_hline(
+      aes(yintercept = 0), linetype = "dashed", color = "black"
     )
   
   list(
@@ -594,9 +688,16 @@ compute_phase_diff_alt <- function(coherence_list, period = 5){
 }
 ```
 
+Compare the 2 ways to check phase difference
+
 ```{r}
-compute_phase_diff(countries_wavelets, period = 4.5)$plot / 
-compute_phase_diff_alt(countries_coherence, period = 4.5)$plot
+compute_phase_diff(countries_wavelets, period = 5)$plot / 
+compute_phase_diff_alt(countries_coherence, period = 5)$plot
+```
+
+```{r}
+compute_phase_diff(countries_wavelets, period = 2.5)$plot / 
+compute_phase_diff_alt(countries_coherence, period = 2.5)$plot
 ```
 
 ## Correlation to other factors
