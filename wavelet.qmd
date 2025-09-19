@@ -1,12 +1,11 @@
 ---
 title: "Wavelet analysis"
+toc: true
 ---
-
-Goal:
 
 -   Check synchrony in the number of measles cases between SEA countries
 
--   Method: wavelet analysis to assess:
+-   Method: wavelet analysis to assess
 
     -   Seasonal pattern (1 year cycle, depends on school year, etc.)
 
@@ -16,7 +15,7 @@ Goal:
 
 ### Load data
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 #| code-fold: true
 #| code-summary: "Load measles epicurve data for SEA countries"
 suppressMessages(library(tidyverse))
@@ -170,7 +169,7 @@ ggplotly(log_epicurve_plot)
 
 ## Wavelet analysis
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 library(WaveletComp)
 ```
 
@@ -203,16 +202,19 @@ Follow these steps of wavelet analysis
 ```{r}
 #| code-fold: true
 #| code-summary: "Code"
-wavelet <- log_transformed %>% 
-  filter(
-    country == "Viet Nam"
-  ) %>% 
-  analyze.wavelet(
-    my.series = "incidence",
-    dt = 1/12,
-    lowerPeriod = 1/6,
-    upperPeriod = 8
-  )
+capture.output(
+  wavelet <- log_transformed %>% 
+    filter(
+      country == "Viet Nam"
+    ) %>% 
+    analyze.wavelet(
+      my.series = "incidence",
+      dt = 1/12,
+      lowerPeriod = 1/6,
+      upperPeriod = 8,
+      verbose = FALSE
+    )
+) %>% invisible()
 
 wt.image(wavelet, 
          # n.levels = 250, 
@@ -266,7 +268,8 @@ reconstruct(
   wavelet,
   sel.period = 5,
   plot.rec = TRUE,
-  show.date = TRUE
+  show.date = TRUE,
+  verbose = FALSE
 )
 ```
 
@@ -281,7 +284,8 @@ reconstruct(
   wavelet,
   sel.period = 2,
   plot.rec = TRUE,
-  show.date = TRUE
+  show.date = TRUE,
+  verbose = FALSE
 )
 ```
 
@@ -296,7 +300,8 @@ reconstruct(
   wavelet,
   sel.period = 1,
   plot.rec = TRUE,
-  show.date = TRUE
+  show.date = TRUE,
+  verbose = FALSE
 )
 ```
 :::
@@ -357,7 +362,7 @@ Exclusion criteria:
 
 -   Low case count across time series (*Singapore*)
 
-```{r}
+```{r message = FALSE}
 #| code-fold: true
 #| code-summary: "Perform wavelet data analysis on SEA countries"
 analyze_countries <- c("Thailand", "Myanmar", "Philippines", "Viet Nam", 
@@ -369,14 +374,18 @@ countries_wavelets <- log_transformed %>%
   nest() %>% 
   mutate(
     wavelet = map(data, \(dat){
-      dat %>% 
-      analyze.wavelet(
-        my.series = "incidence",
-        dt = 1/12, # 1 time unit = 1 year 
-        lowerPeriod = 1/6, # 2 months
-        upperPeriod = 8, #  years
-        verbose = FALSE
-      )
+      capture.output(
+        out <- dat %>% 
+        analyze.wavelet(
+          my.series = "incidence",
+          dt = 1/12, # 1 time unit = 1 year 
+          lowerPeriod = 1/6, # 2 months
+          upperPeriod = 8, #  years
+          verbose = FALSE
+        )
+      ) %>% invisible()
+        
+      out
     })
   ) %>% 
   select(country, wavelet) %>%
@@ -477,7 +486,7 @@ ggplotly(
 
 ## 1-year
 
-The plot suggests no SEA country exhibits an annual measles cycle
+The plot suggests no SEA country exhibits consistent annual measles cycles
 
 ```{r}
 ggplotly(
@@ -597,18 +606,17 @@ countries_phase <- compute_phase(countries_wavelets, period = 5)
 ggplotly(countries_phase$plot)
 ```
 
-## 2-year
+## 2.5-year
 
 Roughly biennial epidemic
 
 ```{r}
-countries_phase <- compute_phase(countries_wavelets, period = 2)
-
-countries_phase$plot 
+countries_phase <- compute_phase(countries_wavelets, period = 2.5)
+ggplotly(countries_phase$plot)
 ```
 :::
 
-## Cross-wavelet analysis
+## Biwavelet analysis
 
 Follow these steps of cross-wavelet analysis:
 
@@ -622,13 +630,13 @@ Follow these steps of cross-wavelet analysis:
 
 ```{r}
 #| code-fold: true
-#| code-summary: "Function to generate coherence analyses for multiple pairs"
+#| code-summary: "Function to generate biwavelet analyses for multiple pairs"
 library(janitor)
 
 # Function that takes data instead of wavelets
 # wavelets, period = 5, ref_country = "Viet Nam", constraint = TRUE, diff_to_time = TRUE
 # when ref_country is not found, generate all unique pairs 
-generate_coherence_analysis <- function(data, 
+generate_biwavelet_analysis <- function(data, 
                                         ref_country = "Viet Nam",
                                         verbose = FALSE){
   countries <- unique(data$country)
@@ -646,7 +654,8 @@ generate_coherence_analysis <- function(data,
   }
   
   coherence <- map(pairs, \(curr_pair){
-    data %>% 
+    capture.output(
+      out <- data %>% 
       filter(
         country %in% curr_pair
       ) %>% 
@@ -663,6 +672,9 @@ generate_coherence_analysis <- function(data,
         upperPeriod = 8,
         verbose = verbose
       )
+    ) %>% invisible()
+    
+    out
   })
   
   names(coherence) <- map_chr(pairs, \(pair) paste(pair, collapse = " - "))
@@ -698,10 +710,12 @@ plot_cwavelet_power <- function(coherence_list){
 }
 ```
 
-```{r}
-countries_coherence <- log_transformed %>% 
+```{r output=FALSE}
+capture.output(
+  countries_coherence <- log_transformed %>% 
     filter(country %in% analyze_countries) %>% 
-    generate_coherence_analysis()
+    generate_biwavelet_analysis()
+) %>% invisible()
 ```
 
 ### Cross-wavelet power spectrum
@@ -856,10 +870,10 @@ compute_phase_diff <- function(coherence_list, period = 5,
 ## 5-year
 
 ```{r}
-compute_phase_diff(countries_coherence, period = c(4.5,5))$plot
+compute_phase_diff(countries_coherence, period = 5)$plot
 ```
 
-## 2-year
+## 2.5-year
 
 ```{r}
 compute_phase_diff(countries_coherence, period = 2.5, diff_to_time = TRUE)$plot
@@ -938,9 +952,9 @@ multiannual_synch <- compute_synchrony(countries_coherence, period = 5)
 multiannual_synch$plot
 ```
 
-## 2-year
+## 2.5-year
 
-biennial synchrony
+Roughly biennial synchrony
 
 ```{r}
 biennial_synch <- compute_synchrony(countries_coherence, period = 2.5)
@@ -950,17 +964,19 @@ biennial_synch$plot
 
 ## SEA map
 
-```{r}
+```{r warning=FALSE, message=FALSE}
 #| code-fold: true
 #| code-summary: "Get map data of SEA countries"
 library(geodata)
 library(countrycode)
 library(sf)
+library(CoordinateCleaner)
 
 # convert contry name as ISO vec
 sea_iso <- countrycode(filtered_countries, origin = "country.name", destination = "iso3c")
 analyzed_iso <- countrycode(names(countries_wavelets), origin = "country.name", destination = "iso3c")
 
+# get gadm map 
 map_data <- map_dfr(sea_iso, \(iso){
   data <- gadm(iso, level = 0, path = "data/gadm/")
   
@@ -975,7 +991,9 @@ map_data <- map_dfr(sea_iso, \(iso){
 ### Get SEA map
 
 ```{r}
-# try plotting 
+#| code-fold: true
+#| code-summary: "generate SEA map"
+ 
 sea_plot <- map_data %>% 
   mutate(
     country = if_else(status == "analyzed", 
@@ -1019,23 +1037,40 @@ prepare_plot_data <- function(synchrony_out, centroid_df = iso_centroid){
     # ---- get the coordinate of the centroid of each country
     left_join(
       # get coordinate of centroid of origin country 
-      iso_centroid %>% rename(from_x = x, from_y = y),
+      centroid_df %>% rename(from_x = x, from_y = y),
       by = join_by(from == iso)
     ) %>% 
     left_join(
       # get coordinate of centroid of destination country
-      iso_centroid %>% rename(to_x = x, to_y = y),
+      centroid_df %>% rename(to_x = x, to_y = y),
       by = join_by(to == iso)
     )
 }
 
 # get data.frame of iso and coordinate of centroid of that country
-iso_centroid <- map_data %>% 
-  as_tibble() %>% 
-  mutate(
-    centroid = st_coordinates(st_point_on_surface(sf.geometry)),
-    x = centroid[,"X"],
-    y = centroid[,"Y"]
+# iso_centroid <- map_data %>% 
+#   as_tibble() %>% 
+#   mutate(
+#     centroid = st_coordinates(st_point_on_surface(sf.geometry)),
+#     x = centroid[,"X"],
+#     y = centroid[,"Y"]
+#   ) %>% 
+#   select(iso, x, y)
+
+# try centroid from CoordinateCleaner package
+iso_centroid <- countryref %>% 
+  filter(
+    iso3 %in% sea_iso,
+    type == "country"
+  ) %>% 
+  # for each country, only keep the first record
+  group_by(iso3) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  rename(
+    iso = iso3,
+    x = centroid.lon,
+    y = centroid.lat
   ) %>% 
   select(iso, x, y)
 ```
@@ -1093,21 +1128,31 @@ sea_plot +
   labs(
     x = "", y = "",
     fill = "country",
-    alpha = "Absolute avg. phase diff"
+    alpha = "|avg. phase diff|"
   )
 ```
 :::
 
 ### SEA countries
 
-Visualize the flow of measles between SEA countries
+Visualize the flow of measles between SEA countries, following these steps:
 
-```{r}
+-   Perform bi-wavelet analysis on all pairs of countries
+
+-   Compute coherence-weighted average phase difference (CAPD), the result is in radian.
+
+-   Generate the arrows:
+
+    -   For each origin country, create an arrow to the destination country with lowest absolute CAPD value.
+
+    -   Alpha value for the arrow is also determined by absolute CAPD value, where bolder color indicates lower absolute CAPD.
+
+```{r warning=FALSE, message=FALSE}
 #| code-fold: true
 #| code-summary: "Compute coherence of all country pairs"
 all_countries_coherence <- log_transformed %>% 
     filter(country %in% analyze_countries) %>% 
-    generate_coherence_analysis(ref_country = NA)
+    generate_biwavelet_analysis(ref_country = NA)
 ```
 
 ```{r}
@@ -1152,10 +1197,109 @@ sea_plot +
   )
 ```
 
-## Correlation to other factors
+## Correlation to distance
 
-TODO: Check correlation of the synchrony to other factors, e.g.:
+Distance between 2 countries are defined as the distance between centroids.
 
--   Distance
+Only 5-year period is visualized here
 
--   Change in synchrony to Thailand and Philippines over time (suggest the source of measles changes b4 and after covid?)
+```{r}
+#| code-fold: true
+#| code-summary: "Prepare data for plotting"
+countries_avg <- all_countries_synch$df %>% 
+  group_by(label) %>% 
+  summarize(
+    avg_synchrony = mean(synchrony),
+    avg_coherence = mean(coherence),
+    # convert phase diff from radians to years
+    avg_abs_phasediff = mean(abs(phase_diff))*5/(2*pi)
+  ) %>% 
+  ungroup() %>% 
+  # get centroid of each country pairs
+  separate(label, into = c("from", "to"), sep = " - ") %>% 
+  mutate(
+    from = countrycode(from, origin = "country.name", destination = "iso3c"),
+    to = countrycode(to, origin = "country.name", destination = "iso3c")
+  ) %>% 
+  left_join(
+    # get coordinate of centroid of origin country 
+    iso_centroid %>% rename(from_x = x, from_y = y),
+      by = join_by(from == iso)
+  ) %>% 
+  left_join(
+    # get coordinate of centroid of destination country
+    iso_centroid %>% rename(to_x = x, to_y = y),
+    by = join_by(to == iso)
+  )
+
+
+# compute distance
+from_pts <- st_as_sf(countries_avg, coords = c("from_x", "from_y"), crs = 4326)
+to_pts   <- st_as_sf(countries_avg, coords = c("to_x", "to_y"), crs = 4326)
+distances <- st_distance(from_pts, to_pts, by_element = TRUE)
+
+countries_avg <- countries_avg %>% 
+  mutate(
+    # convert to km
+    distances = as.numeric(distances)/1000
+  )
+```
+
+### Synchrony
+
+```{r}
+#| code-fold: true
+#| code-summary: "Code"
+countries_avg %>% 
+  ggplot(aes(x = distances, y = avg_synchrony)) +
+    geom_point() +
+    geom_smooth(
+      color = "cornflowerblue",
+      fill = "cornflowerblue",
+      method = "loess"
+    ) + 
+    labs(
+      x = "Distance (km)",
+      y = "Average Synchrony"
+    )
+```
+
+### Coherence
+
+```{r}
+#| code-fold: true
+#| code-summary: "Code"
+countries_avg %>% 
+  ggplot(aes(x = distances, y = avg_coherence)) +
+    geom_point() +
+    geom_smooth(
+      method = "loess",
+      color = "cornflowerblue",
+      fill = "cornflowerblue",
+    ) + 
+    labs(
+      x = "Distance (km)",
+      y = "Average Coherence"
+    )
+```
+
+### Phase difference
+
+Visualize the average lag between 2 time series as distance grow
+
+```{r}
+#| code-fold: true
+#| code-summary: "Code"
+countries_avg %>% 
+  ggplot(aes(x = distances, y = avg_abs_phasediff)) +
+    geom_point() +
+    geom_smooth(
+      method = "loess",
+      color = "cornflowerblue",
+      fill = "cornflowerblue",
+    ) + 
+    labs(
+      x = "Distance (km)",
+      y = "Average absolute phase difference (year)"
+    )
+```
