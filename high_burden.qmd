@@ -1,0 +1,554 @@
+---
+title: "Wavelet analysis on 14 high-burden countries and Vietnam"
+toc: true
+---
+
+## Data processing
+
+### Load data
+
+```{r message=FALSE, warning=FALSE}
+#| code-fold: true
+#| code-summary: "Load measles epicurve data for SEA countries"
+suppressMessages(library(tidyverse))
+library(janitor)
+library(plotly)
+library(patchwork)
+library(countrycode)
+
+world_epi_curve <- readxl::read_excel(
+  "data/404-table-web-epi-curve-data.xlsx",
+  sheet = "WEB")
+
+# --- preprocess ----- 
+world_epi_curve <- world_epi_curve %>% 
+  clean_names() %>% 
+  mutate(
+    date = ym(str_c(year, month)),
+    measles_clinical = as.integer(measles_clinical)
+  ) 
+
+filtered_countries <- c(
+  "Viet Nam", "India", "Nigeria", "Indonesia", "Ethiopia", "China", "Philippines", "Uganda", "DR Congo", "Pakistan", "Angola", "Madagascar","Ukraine", "Malawi", "Somalia")
+
+# countries that introduce mcv2 to their routine vaccination before 2017
+early_mcv2 <- c("India", "Indonesia", "China", "Philippines", "Pakistan", "Angola", "Ukraine", "Malawi", "Vietnam")
+# countries that introduce mcv2 to their routine vaccination from 2017 - 2020
+late_mcv2 <- c("Nigeria", "Ethiopia", "Madagascar")
+# countries that introduce mcv2 to their routine vaccination as of 2020
+no_mcv2 <- c("DR Congo", "Uganda","Somalia")
+
+filtered_iso <- countrycode(filtered_countries, origin = "country.name", destination = "iso3c")
+
+# get epi curve of high burden countries
+highburden_epi_curve <- world_epi_curve %>% 
+  clean_names() %>% 
+  mutate(
+    date = ym(str_c(year, month)),
+    measles_suspect = as.integer(measles_suspect),
+    measles_clinical = as.integer(measles_clinical),
+    measles_epi_linked = as.integer(measles_epi_linked),
+    measles_lab_confirmed = as.integer(measles_lab_confirmed),
+    # NOTE: recompute measles total since some epi-linked cases are negative (e.g. record for Indonesia on 2016-10-01)
+    # definition: t sum of clinically-compatible, epidemiologically linked and laboratory-confirmed cases
+    measles_total = abs(measles_clinical) + abs(measles_epi_linked) + abs(measles_lab_confirmed), 
+    # rename Congo for shorter name
+    country = if_else(country == "Democratic Republic of the Congo", "DR Congo", country)
+  ) %>% 
+  filter(
+    iso3 %in% filtered_iso
+  ) 
+```
+
+```{r}
+#| code-fold: true
+#| code-summary: "helper functions"
+to_iso <- \(.){countrycode(., origin = "country.name", destination = "iso3c")}
+to_region <- \(.){countrycode(., origin = "country.name", destination = "region")}
+```
+
+### Clean data
+
+-   The column used for incidence data is measles total (sum of clinical compatible cases, epi-linked cases, laboratory confirmed cases)
+
+-   Make sure the the time series is even-spaced
+
+-   Check % of missing data from each of the 11 SEA countries
+
+```{r}
+#| code-fold: true
+#| code-summary: "Generate evenly spaced time series for all countries"
+date_range <- range(highburden_epi_curve$date)
+highburden_epi_curve <- highburden_epi_curve %>% 
+  group_by(country) %>%
+  rename(
+    incidence = measles_total
+  ) %>% 
+  complete(
+    date = seq(date_range[1], date_range[2], by = "month"),
+    fill = list(
+      incidence = 0
+    )
+  ) %>% 
+  ungroup()
+```
+
+View the percentage of data points where `incidence==0`
+
+```{r}
+#| code-fold: true
+#| code-summary: "Get country with most incidence report being 0"
+percent_zero <- highburden_epi_curve %>% 
+  group_by(country) %>% 
+  summarize(
+    percent_zero = sum(incidence == 0)/n()
+  ) %>% 
+  arrange(
+    desc(percent_zero)
+  ) 
+
+percent_zero
+
+# filtered out countries where percent of data points where incidence = 0 > 50%
+high_pct_zero <- percent_zero %>% filter(percent_zero > 0.4) %>% pull(country)
+```
+
+### Plot incidence
+
+```{r}
+#| code-fold: true
+#| code-summary: "Plor raw incidence"
+highburden_epi_plot <- highburden_epi_curve %>% 
+  filter(!(country %in% high_pct_zero)) %>% 
+  ggplot() +
+  geom_line(
+    aes(
+      x = date,
+      y = incidence,
+      color = country
+    )
+  ) 
+
+ggplotly(highburden_epi_plot)
+```
+
+### Preprocess data
+
+Follow these steps
+
+-   Log transform
+
+-   Normalized
+
+-   Remove latest observation of each country (most likely under-reported)
+
+```{r}
+#| code-fold: true
+#| code-summary: "Preprocess data"
+filtered_epicurve <- highburden_epi_curve %>% 
+  filter(!(country %in% high_pct_zero)) 
+
+log_transformed <- filtered_epicurve %>% 
+  group_by(country) %>% 
+  mutate(
+    # log transform
+    incidence = log10(incidence + 1),
+    # normalized
+    incidence = (incidence - mean(incidence))/sd(incidence)
+  ) %>% 
+  filter(
+    date != max(date)
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+#| code-fold: true
+#| code-summary: "Plot preprocessed data"
+log_epicurve_plot <- log_transformed %>% 
+  ggplot() +
+  geom_line(
+    aes(
+      x = date,
+      y = incidence,
+      color = country
+    )
+  ) 
+
+ggplotly(log_epicurve_plot)
+```
+
+## Wavelet analysis
+
+```{r message=FALSE, warning=FALSE}
+library(WaveletComp)
+```
+
+Follow these steps of wavelet analysis
+
+-   Inspect the **power spectrum across time-period domain**: identify the period that is consistently high over time, which indicates recurring cycles in the time series.
+
+-   Inspect the **global power** (time-averaged power, analogue of the Fourier transform): identify the overall dominant periodicities.
+
+-   Inspect the **period-specific reconstructed component**: extract period-specific oscillations to assess their contributions to the time series.
+
+-   Inspect the **period-specific phase**: visualize the timing of cycles of different time series.
+
+***General setup***
+
+-   1 time unit is 1 year. Since the data is collected every month, `dt = 1/12`
+
+-   The analyzed range of period is `[1/6, 8]` (i.e., 2 months to 8 years)
+
+### Perform analysis on all data
+
+```{r message = FALSE}
+#| code-fold: true
+#| code-summary: "Perform wavelet data analysis on high burden countries"
+countries_wavelets <- log_transformed %>% 
+  group_by(country) %>% 
+  nest() %>% 
+  mutate(
+    wavelet = map(data, \(dat){
+      capture.output(
+        out <- dat %>% 
+        analyze.wavelet(
+          my.series = "incidence",
+          dt = 1/12, # 1 time unit = 1 year 
+          lowerPeriod = 1/6, # 2 months
+          upperPeriod = 8, #  years
+          verbose = FALSE
+        )
+      ) %>% invisible()
+        
+      out
+    })
+  ) %>% 
+  select(country, wavelet) %>%
+  deframe()
+```
+
+### Power spectrum
+
+These plots suggest that high burden countries tend to experience annual or 5-year period
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot power spectrum of all countries"
+
+plot_power <- function(wavelets){
+  # return heatmap of power and also global power
+  imap(wavelets, \(wavelet, country){
+    wt.image(
+        wavelet,
+        main = paste0(country, " (", to_region(country) ,")", " power spectrum"),
+        legend.params = list(lab = "Power"),
+        periodlab = "Period(Year)",
+        show.date = TRUE
+      )
+    
+    wt.avg(
+        wavelet,
+        main = paste0(country," (", to_region(country) ,")", " global power")
+      )
+  })
+}
+```
+
+```{r}
+plot_power(countries_wavelets)
+```
+
+### Prominent period
+
+```{r}
+#| code-fold: true
+#| code-summary: "Prominent measles cycle of each country"
+map2_dfr(names(countries_wavelets), countries_wavelets, \(name, out){
+  data.frame(
+    period = out$Period,
+    power = out$Power.avg,
+    p_val = out$Power.avg.pval,
+    country = name
+  ) %>% 
+  filter(p_val <= 0.05) %>% 
+  arrange(desc(power)) %>% 
+  head(n=1)
+}) %>% 
+mutate(
+  # label period
+  rounded_period = round(period),
+  region = to_region(country)
+) %>% 
+arrange(rounded_period, desc(power)) %>% 
+select(rounded_period, country, region, power)
+```
+
+### Reconstructed component
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot period specific component"
+reconstruct_ts <- function(wavelets, period = 5){
+  df <- map2_dfr(wavelets, names(wavelets), \(wavelet, country){
+    rec_period <- reconstruct(
+      wavelet,
+      sel.period = period,
+      plot.rec = FALSE,
+      verbose = FALSE
+    )
+    
+    rec_period$series %>%
+      mutate(country = country, .before = 1)
+  })
+  
+  plot <- df %>% 
+    ggplot() +
+      geom_line(
+        aes(x = date, y = incidence.r, color = country)
+      ) +
+      labs(
+        y = paste0(round(mean(period), digits = 2), "-year period component"),
+        x = "Date"
+      )
+  
+  # return data.frame and plot
+  list(
+    df = df,
+    plot = plot
+  )
+}
+```
+
+::: panel-tabset
+## 5-year
+
+Take the average of the components of period ranging from 4-5.
+
+Clear oscillations can be observed across all the countries, except Nigeria
+
+```{r}
+ggplotly(
+  reconstruct_ts(countries_wavelets, period = c(4,5))$plot
+)
+```
+
+## 2-year
+
+Roughly biennial component. Take the average of the components of period ranging from 1.9-2.5.
+
+Relatively consistent biennual cycle can be observed for: Viet Nam, Nigeria, Pakistan, DR Congo
+
+```{r}
+ggplotly(
+  reconstruct_ts(countries_wavelets, period = c(1.9, 2.5))$plot
+)
+```
+
+## 1-year
+
+The plot suggests that:
+
+-   Pakistan, Nigeria exhibits consistent annual cycle overtime
+
+-   DR Congo exhibits relatively consistent annual cycle since 2017
+
+-   Ethiopia, China, India, Somalia, Uganda experiences consistent annual measles cycle at the start but diminish over time
+
+```{r}
+ggplotly(
+  reconstruct_ts(countries_wavelets, period = c(0.9,1.1))$plot
+)
+```
+:::
+
+### Phase
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot period-specific phase"
+compute_phase <- function(wavelets, period = 5){
+  df <- map2_dfr(wavelets, names(wavelets), \(wavelet, country){
+    
+    # if only one period is given -> select the closest period
+    # else select all period within the range
+    row_period <- if(length(period) == 1) which.min(abs(wavelet$Period - period)) else
+      which( (wavelet$Period >= min(period)) & (wavelet$Period <= max(period)) )
+    
+    data.frame(
+      date = wavelet$series$date,
+      # compute mean phase across all selected periods
+      phase = if(length(row_period) > 1) colMeans(wavelet$Phase[row_period,]) else wavelet$Phase[row_period,]
+    ) %>% 
+      mutate(
+        country = country,
+        .before = 1
+      )
+  })
+  
+  plot <- df %>% 
+    ggplot() +
+      geom_line(
+        aes(x = date, y = phase, color = country)
+      ) +
+      labs(
+        y = "Phase",
+        x = "Date"
+      )
+  
+  # return data.frame and plot
+  list(
+    df = df,
+    plot = plot
+  )
+}
+```
+
+```{r include=FALSE}
+#| code-fold: true
+#| code-summary: "Function to plot period-specific phase difference"
+
+# Manually compute phase difference
+# There will be an alternative function to make use package (WaveletComp) functions later on
+compute_phase_diff_alt <- function(wavelets, period = 5, ref_country = "Viet Nam", 
+                               constraint = TRUE, diff_to_time = TRUE){
+  # compute phase of each of these countries
+  phases <- compute_phase(wavelets, period = period)$df
+  
+  ref_country_phase <- phases %>% 
+    filter(
+      country == ref_country
+    ) %>% 
+    select(-country)
+  
+  # get vector of remaining country
+  remaining_countries <- phases %>% filter(country != ref_country) %>% pull(country) %>% unique()
+  
+  df <- map_dfr(remaining_countries, \(curr_country){
+    
+    data.frame(
+      date = ref_country_phase$date,
+      phase_diff = ref_country_phase$phase - phases %>% 
+            filter(
+              country == curr_country
+            ) %>% pull(phase)
+    ) %>% 
+    mutate(
+      # constraint the phase difference within +-pi
+      phase_diff = if(constraint) ((phase_diff + 3*pi) %% (2*pi)) - pi else phase_diff,
+      phase_diff = if(diff_to_time) phase_diff*mean(period)/(2*pi) else phase_diff,
+      label = paste0(ref_country, "-", curr_country)
+    )
+  })
+  
+  plot <- df %>% 
+    ggplot() +
+      geom_line(
+        aes(x = date, y = phase_diff, color = label)
+      ) +
+      geom_hline(
+        aes(yintercept = 0),
+        color = "black", linetype = "dashed"
+      ) + 
+    labs(
+      title = paste0("Phase difference between ", ref_country, " and other countries"),
+      xlab = "Date",
+      y = paste0("Phase difference (in ", if(diff_to_time) "time unit" else "radians", ")")
+    )
+    
+  list(
+    df = df, plot = plot
+  )
+}
+```
+
+::: panel-tabset
+## 5-year
+
+Major epidemics cycle (roughly 5 years)
+
+```{r}
+countries_phase <- compute_phase(countries_wavelets, period = 5)
+
+ggplotly(countries_phase$plot)
+```
+
+## 1-year
+
+Roughly annual cycle
+
+```{r}
+countries_phase <- compute_phase(countries_wavelets, period = 1)
+ggplotly(countries_phase$plot)
+```
+:::
+
+### Periodicity over time
+
+Plot power of period specific oscillations over time. Different linetypes represent the time period when MCV2 was introduced into the routine vaccination program of the corresponding country.
+
+```{r}
+#| code-fold: true
+#| code-summary: "Function to plot period-specific power over time"
+plot_power_time <- function(wavelets, period = 5){
+  df <- map2_dfr(names(wavelets), wavelets, \(country, wavelet){
+    # if only one period is given -> select the closest period
+    # else select all period within the range
+    row_period <- if(length(period) == 1) which.min(abs(wavelet$Period - period)) else
+      which( (wavelet$Period >= min(period)) & (wavelet$Period <= max(period)) )
+    
+    data.frame(
+      date = wavelet$series$date,
+      country = country,
+      # compute mean power
+      power = if(length(row_period) > 1) colMeans(wavelet$Power[row_period,]) else wavelet$Power[row_period,],
+      mcv2_time = case_when(
+        to_iso(country) %in% to_iso(early_mcv2) ~ "Before 2017",
+        to_iso(country) %in% to_iso(late_mcv2) ~ "2017-2019",
+        to_iso(country) %in% to_iso(no_mcv2) ~ "Unintroduced by 2020",
+        .default = "Unknown"
+      )
+    )
+  })
+  
+  plot <- df %>% 
+    ggplot() +
+    geom_line(
+      aes(x = date, y = power, color = country, linetype = mcv2_time)
+    ) + 
+    labs(
+      title = paste0("Power of ", mean(period), "-year period"),
+      x = "Date",
+      y = "Powers",
+      linetype = "Year introduce MCV2"
+    )
+  
+  list(
+    df = df,
+    plot = plot
+  )
+}
+```
+
+::: panel-tabset
+
+## 5-year
+Take the average power of period ranging from 4-5
+```{r}
+ggplotly(plot_power_time(countries_wavelets, period = c(4,5))$plot)
+```
+
+
+## 2-year
+Take the average power of period ranging from 1.5-2.5
+```{r}
+ggplotly(plot_power_time(countries_wavelets, period = c(1.5,2.5))$plot)
+```
+
+## 1-year
+Take the average power of period ranging from 0.8-1.2
+```{r}
+ggplotly(plot_power_time(countries_wavelets, period = c(0.8,1.2))$plot)
+```
+
+:::
