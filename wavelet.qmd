@@ -410,11 +410,18 @@ plot_power <- function(wavelets){
         periodlab = "Period(Year)",
         show.date = TRUE
       )
+    spectrum <- recordPlot()
     
     wt.avg(
         wavelet,
         main = paste0(country, " global power")
       )
+    global_power <-  recordPlot()
+    
+    list(
+      "spectrum" = spectrum,
+      "global_power" = global_power
+    )
   })
 }
 ```
@@ -686,7 +693,6 @@ generate_biwavelet_analysis <- function(data,
 ```{r}
 #| code-fold: true
 #| code-summary: "Function to generate cross-wavelet power spectrum plot"
-
 plot_cwavelet_power <- function(coherence_list){
   # return heatmap of power and also global power
   imap(coherence_list, \(coherence, label){
@@ -702,10 +708,19 @@ plot_cwavelet_power <- function(coherence_list){
         show.date = TRUE
       )
     
+    spectrum <- recordPlot()
+    
     wc.avg(
         coherence,
         main = paste0(label, " global power")
       )
+    
+    global_power <- recordPlot()
+    
+    list(
+      "spectrum" = spectrum,
+      "global_power" = global_power
+    )
   })
 }
 ```
@@ -733,7 +748,7 @@ Some notable observations at the 4-5 period (major epidemics cycle):
 -   the measles cycle of Vietnam - Thailand started out out of phase phase but slowly out turns in-phase (around the 2021 year mark)
 
 ```{r}
-plot_cwavelet_power(countries_coherence)
+plot_cwavelet_power(countries_coherence) %>% invisible()
 ```
 
 ### Coherence
@@ -1133,6 +1148,10 @@ sea_plot +
 ```
 :::
 
+
+
+
+
 ### SEA countries
 
 Visualize the flow of measles between SEA countries, following these steps:
@@ -1303,3 +1322,101 @@ countries_avg %>%
       y = "Average absolute phase difference (year)"
     )
 ```
+
+
+## 6x6 grid
+Arrange wavelet and biwavelet spectra into a 6x6 grid
+
+```{r output=FALSE, message=FALSE}
+#| code-fold: true
+#| code-summary: "Prepare data"
+biwavelet_plots <- plot_cwavelet_power(all_countries_coherence) 
+# only keep the spectrum plots
+biwavelet_plots <- biwavelet_plots %>% lapply(\(plot){plot$spectrum})
+
+wavelet_plots <- plot_power(countries_wavelets)
+wavelet_plots <- wavelet_plots %>% lapply(\(plot){plot$spectrum})
+```
+
+```{r warning=FALSE, message=FALSE}
+#| code-fold: true
+#| code-summary: "Function to generate grid plot"
+library(grid)
+library(gridBase)
+library(cowplot)
+
+# hacky way to turn recorded plot to grob
+record_to_grob <- function(rec_plot, width = 8, height = 6, res = 200, zoom_w=0.9, zoom_h=0.8) {
+  tf <- tempfile(fileext = ".png")
+  png(tf, width=width, height = height,units="in", res=res)
+  replayPlot(rec_plot)
+  dev.off()
+  
+  g <- rasterGrob(png::readPNG(tf))
+  # crop image
+  grid::editGrob(
+    g,
+    vp = grid::viewport(x = 0.5, y = 0.5,
+                        width = zoom_w, height = zoom_h,
+                        just = c("center", "center"))
+  )
+}
+
+generate_grid_plots <- function(wavelet_plots, cwavelet_plots){
+  countries <- names(wavelet_plots)
+  n <- length(countries)
+  
+  plot_rows <- lapply(seq_len(n+1), \(row){
+    curr_row <- lapply(seq_len(n+1), \(col){
+      curr_plt <- NULL
+      if(row==1){
+        curr_plt <- if(col == 1) NULL else textGrob(countries[col-1], 
+                                                    gp=gpar(fontsize=8))
+      }else if(col == 1){
+        curr_plt <- textGrob(countries[row-1], gp=gpar(fontsize=8))
+      }else{
+        if(row==col) {
+          curr_plt <- record_to_grob(wavelet_plots[[countries[row-1]]],
+                                     zoom_w=1.08, zoom_h=1.4)
+        }else{
+          nm <- intersect(
+            c(paste(countries[row-1], "-", countries[col-1]),
+              paste(countries[col-1], "-", countries[row-1])
+            ),
+            names(cwavelet_plots)
+          )
+          curr_plt <- record_to_grob(cwavelet_plots[[nm]], zoom_w=1.08, zoom_h=1.4)
+        }
+      }
+      curr_plt
+    })
+    
+    plot_grid(plotlist = curr_row, 
+              align="h", ncol = n+1, nrow=1,
+              rel_widths = c(1, rep(2, n)),
+              greedy = TRUE
+              )
+  })
+  
+  plot_grid(plotlist = plot_rows, align="v", nrow = n+1, ncol=1,
+            rel_heights = c(1, rep(2, n)),
+            greedy = TRUE
+            )
+}
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Output"
+grid_out <- generate_grid_plots(wavelet_plots, biwavelet_plots)
+grid_out
+# save output
+# ggsave("out_figs/grid_spectrum.png", plot = grid_out, 
+#        height = 1600, width = 2800, units = "px",
+#        dpi = 700)
+```
+
+
+
+

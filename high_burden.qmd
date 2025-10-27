@@ -224,6 +224,8 @@ countries_wavelets <- log_transformed %>%
       out
     })
   ) %>% 
+  mutate(region = to_region(country)) %>% 
+  arrange(region, country) %>% 
   select(country, wavelet) %>%
   deframe()
 ```
@@ -235,7 +237,6 @@ These plots suggest that high burden countries tend to experience annual or 5-ye
 ```{r}
 #| code-fold: true
 #| code-summary: "Function to plot power spectrum of all countries"
-
 plot_power <- function(wavelets){
   # return heatmap of power and also global power
   imap(wavelets, \(wavelet, country){
@@ -246,11 +247,19 @@ plot_power <- function(wavelets){
         periodlab = "Period(Year)",
         show.date = TRUE
       )
+    spectrum <- recordPlot()
     
     wt.avg(
         wavelet,
         main = paste0(country," (", to_region(country) ,")", " global power")
       )
+    
+    global_power <-  recordPlot()
+    
+    list(
+      "spectrum" = spectrum,
+      "global_power" = global_power
+    )
   })
 }
 ```
@@ -531,24 +540,27 @@ plot_power_time <- function(wavelets, period = 5){
 ```
 
 ::: panel-tabset
-
 ## 5-year
+
 Take the average power of period ranging from 4-5
+
 ```{r}
 ggplotly(plot_power_time(countries_wavelets, period = c(4,5))$plot)
 ```
 
-
 ## 2-year
+
 Take the average power of period ranging from 1.5-2.5
+
 ```{r}
 ggplotly(plot_power_time(countries_wavelets, period = c(1.5,2.5))$plot)
 ```
 
 ## 1-year
+
 Take the average power of period ranging from 0.8-1.2
+
 ```{r}
 ggplotly(plot_power_time(countries_wavelets, period = c(0.8,1.2))$plot)
 ```
-
 :::
