@@ -643,13 +643,17 @@ library(janitor)
 # Function that takes data instead of wavelets
 # wavelets, period = 5, ref_country = "Viet Nam", constraint = TRUE, diff_to_time = TRUE
 # when ref_country is not found, generate all unique pairs 
+# when repeated = TRUE, included permutations of pairs intead of combinations
 generate_biwavelet_analysis <- function(data, 
                                         ref_country = "Viet Nam",
+                                        repeated = FALSE,
                                         verbose = FALSE){
   countries <- unique(data$country)
   
   # generate all unique pairs
-  pairs <- combn(countries, 2, simplify = FALSE)
+  pairs <- if(!repeated) combn(countries, 2, simplify = FALSE) else
+    expand.grid(countries, countries) %>% filter(Var1 != Var2) %>% 
+    apply(1, \(row){as.character(row)}, simplify = FALSE)
   
   # if ref country is provided, keep pairs with the ref_country
   # also make sure ref country is the first time series
@@ -688,6 +692,7 @@ generate_biwavelet_analysis <- function(data,
 
   coherence
 }
+
 ```
 
 ```{r}
@@ -1330,7 +1335,8 @@ Arrange wavelet and biwavelet spectra into a 6x6 grid
 ```{r output=FALSE, message=FALSE}
 #| code-fold: true
 #| code-summary: "Prepare data"
-biwavelet_plots <- plot_cwavelet_power(all_countries_coherence) 
+permu_coherence <- generate_biwavelet_analysis(log_transformed, ref_country = NA, repeated = TRUE)
+biwavelet_plots <- plot_cwavelet_power(permu_coherence) 
 # only keep the spectrum plots
 biwavelet_plots <- biwavelet_plots %>% lapply(\(plot){plot$spectrum})
 
@@ -1379,12 +1385,14 @@ generate_grid_plots <- function(wavelet_plots, cwavelet_plots){
           curr_plt <- record_to_grob(wavelet_plots[[countries[row-1]]],
                                      zoom_w=1.08, zoom_h=1.4)
         }else{
-          nm <- intersect(
-            c(paste(countries[row-1], "-", countries[col-1]),
-              paste(countries[col-1], "-", countries[row-1])
-            ),
-            names(cwavelet_plots)
-          )
+          # nm <- intersect(
+          #   c(paste(countries[row-1], "-", countries[col-1]),
+          #     paste(countries[col-1], "-", countries[row-1])
+          #   ),
+          #   names(cwavelet_plots)
+          # )
+          
+          nm <- paste(countries[row-1], "-", countries[col-1])
           curr_plt <- record_to_grob(cwavelet_plots[[nm]], zoom_w=1.08, zoom_h=1.4)
         }
       }
